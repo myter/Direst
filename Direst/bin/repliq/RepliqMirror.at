@@ -1,0 +1,137 @@
+
+def RepliqMirrorTrait := object: {
+	deftype IllegalRepliqPassing;
+	def XIllegalRepliqPassing := lobby.at.lang.exceptions.createException(IllegalRepliqPassing);
+	
+	deftype RepliqException;
+	def XRepliqException := lobby.at.lang.exceptions.createException(RepliqException);
+	
+	deftype Repliq;
+	
+				
+	def makeMasterMirror(objectId) {
+		extend: defaultMirror with: {
+			def mirror := self;		
+			def act := reflectOnActor();
+			
+			def actorId := act.actorId;
+		
+			def getId() { objectId };
+			def getActorId() { actorId };
+			def getMasterId() { actorId };
+			
+			def replay := nil;
+			
+				
+			// pass a master repliq to another actor, using the replica mirror.
+			def pass() {
+				act.passReplica(self.base, objectId, actorId);
+			};
+			
+			// can not receive a repliq with a master mirror.
+			def resolve() {
+				raise: XRepliqException.new("cannot receive a repliq with a master mirror");
+			};
+		
+			def defineField(name, value) {
+				def makeField(nam, com) {
+				   object: {
+				     def new(newHost) { self }; // singleton pattern
+				     def name := nam;
+				     def comm := com;
+				     def tent := com;
+				     def readField() { 
+				     	tent
+			     	 };
+				     def writeField(newVal) { 
+						tent := newVal; 
+						tent;
+					};
+					def resetToCommit() {
+						tent := comm;
+					};
+					def commit() {
+						comm := tent;
+					};
+				   } taggedAs: [ /.at.lang.types.Field, /.at.lang.types.Isolate ];
+				 };
+				 self.addField(makeField(name, value));
+				nil;
+			};
+			
+			def eachField: f {
+				self.listFields().each:{ |field|
+					if: !(field.name == `super) then: {
+						f(field)
+					}
+				}
+			};
+			
+			def prepareReplay() {
+				self.eachField:{|f| f.resetToCommit() };
+				self.replay := true;
+			};
+			
+			def endReplay() {
+				self.replay := nil;
+			};
+			
+			def commitFields() {
+				self.eachField:{|f| f.commit() };
+			};
+			
+			def print() {
+				"<Repliq: " + self.getId();
+			};
+			
+			
+			def invoke(rec, inv) {
+				if: (nil == self.replay) then: {
+					reflectOnActor().invoke(rec, inv);
+				};
+				//system.println("invocation | sender: " + serviceId + " | master: " + actorId + " | id: " + (reflect: rec).getId() + " | sel: " + inv.selector);
+				super^invoke(rec, inv);
+			}
+		} taggedAs: [ /.at.lang.types.Isolate ];
+	};
+	
+
+	def makeReplicaMirror(objectId, masterId, masterApi, masterNr) {
+		extend: makeMasterMirror(objectId) with: {
+			def getMasterId() { masterId };
+			def getMasterApi() { masterApi };
+			def getMasterNr() { masterNr };
+			
+			// Pass a replica to another actor
+			def pass() {
+				system.println("# passing replica");
+				reflectOnActor().passReplica(self.base, objectId, getMasterId());
+				//copyIsolateWithMirror(self.base, self);
+			};
+			
+			// Receive a replica from another actor
+			def resolve() {
+				//system.println(self.base);
+				system.println("# resolving replica");
+				reflectOnActor().resolveReplica(self);
+			};
+			
+		} taggedAs: [ /.at.lang.types.Isolate ];
+	};
+	
+	def copyIsolateWithMirror(iso, mirror) {
+		def result := object: { } taggedAs: [ /.at.lang.types.Isolate, Repliq ] mirroredBy: mirror;
+		def fields := (reflect: iso).listFields();
+		fields.each: { |field| 
+		   if: !(field.name ==`super) then: {
+		   	(reflect: result).defineField(field.name, field.readField()); 
+		   };
+		};
+		def methods := (reflect: iso).listMethods();
+		methods.each: { |method|
+			(reflect: result).addMethod(method);
+		};
+		result;
+	};
+	
+}

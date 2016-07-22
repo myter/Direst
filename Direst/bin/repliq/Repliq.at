@@ -1,0 +1,103 @@
+
+	deftype Repliq;
+// Simple Repliq
+//
+// * No Rounds
+// * Not all restrictions on actions within repliq (async, now(), etc...), although already no side effects.
+// * 
+
+
+def HashMap := jlobby.java.util.HashMap;
+import /.at.collections.java.vector;
+
+
+	
+	
+def RepliqActorTrait := object: {
+
+	// Repliq //
+	////////////
+
+	def createRepliqId() {
+		"Repliq#" +  reflectOnActor().actorId + /.at.support.timer.now().toString() + /.at.support.util.randomNumberBetween(0,10000000)
+	};
+
+
+	reflectOnActor().becomeMirroredBy: (extend: reflectOnActor() with: {
+		import ~.RepliqMirror;
+		import ~.Services;
+		import ~.Logs;
+	
+		def passReplica(repliq, objectId, actorId) {
+			//def om := reflect: repliq;
+			//self.registerService(actorId, om.getMasterApi());
+			def mirror := self.makeReplicaMirror(objectId, actorId, self.getPublisherApi(), self.getRemoteMasterNr(actorId));
+			self.copyIsolateWithMirror(repliq, mirror);
+		};
+		
+		def resolveReplica(om) {
+			def repliq := self.getRepliq(om.getId());
+			 // we already have a replica of the object
+			 if: (nil == repliq) then: {
+			 	repliq := om.base;
+			 	def masterApi := om.getMasterApi();
+			 	self.registerPublisher(om.getMasterId(), masterApi);
+			 	self.registerRepliq(repliq);
+			 	self.registerMasterRound(om.getMasterId(), om.getMasterNr());
+			 	masterApi<-registerListener(self.getActorId(), self.getListenerApi(), om.getMasterNr());
+			};
+			repliq
+		};
+		
+		def invoke(rec, inv) {
+			def om := reflect: rec;
+			self.logOperation(self.getActorId(), om.getMasterId(), om.getId(), inv);
+		};
+		
+		def transmit(msg) {
+			//msg.api := self.api;
+			//msg.actorId := self.actorId;
+			super^transmit(msg);
+		};
+		
+		def send(rec, msg) {
+			def om := reflect: msg;	
+			// attach the listener api of this to every message
+			//if: !(om.respondsTo(`listenerApi)) then: {
+			//	om.defineField(`listenerApi, self.getListenerApi());
+			//};
+			//msg.api := self.api;
+			//msg.actorId := self.actorId;
+			super^send(rec, msg);
+		};
+		
+		def receive(rec, msg) {
+			//system.println("receiving " + msg.selector);
+			//if: ((msg.selector == `resolveWithValue).and: {msg.arguments.length > 0}) then: {			
+			//	def val := msg.arguments[1];
+			//	if: (is: val taggedAs: Repliq) then: {
+			//		def master := (reflect: val).getMasterApi();
+			//		master<-registerListener(
+			//		system.println("resolving repliq");
+			//	}
+			//};
+			
+			//system.println((reflect: msg).listMethods());
+			//self.registerService(msg.actorId, msg.api);
+			super^receive(rec, msg);
+		}
+	});
+	
+	def repliq: rcode {
+		def act := reflectOnActor();
+		def objectId := createRepliqId();
+		def r := object: rcode taggedAs: [ /.at.lang.types.Isolate, Repliq ] mirroredBy: act.makeMasterMirror(objectId);
+		act.registerRepliq(r);
+		r
+	};
+	
+	
+	def yield() {
+		reflectOnActor().yield();
+	};
+}

@@ -1,0 +1,88 @@
+import /.at.support.timer;
+deftype Service;
+
+def HashMap := jlobby.java.util.HashMap;
+def Vector := jlobby.java.util.Vector;
+
+
+
+def a1 := actor: {
+	import /.at.support.timer;
+	import ~.Repliq;
+		
+	def boundCounter := repliq: {
+		def value := 0;
+		def inc(x) {
+			if: (value < 10) then: {
+				value := value + x;
+			};
+		};
+	};
+
+	
+	def publicInterface := object: {
+		def get() { 
+			boundCounter
+		};
+		def give(l) {
+			l
+		}
+	};
+	
+	when: seconds(3) elapsed: {
+		system.println("....");
+		system.println("master: " + boundCounter.value);
+	};
+	
+	export: publicInterface as: Service;
+	
+};
+
+def a2 := actor: {
+	def timer := /.at.support.timer;
+	import /.at.lang.futures;
+	import ~.Repliq;
+	enableFutures(true);
+		
+	when: Service discovered: { |o|
+		when: o<-get() becomes: { |r|
+			system.println(r);
+			when: o<-get() becomes: { |r|
+				system.println(r);
+				when: o<-give(r) becomes: { |l|
+					system.println(r == l);
+					0.to: 3 do: { |i|
+						r.inc(2);
+						yield();
+					};
+					timer.when: seconds(3) elapsed: {
+						system.println("....");
+						system.println("replica	: " + r.value);
+						system.println("pending: " + reflectOnActor().pending);
+						system.println("commit: " + reflectOnActor().commit);
+					};
+				}
+			}
+	} };
+};
+def a3 := actor: {
+	def timer := /.at.support.timer;
+	import /.at.lang.futures;
+	import ~.Repliq;
+	enableFutures(true);
+		
+	when: Service discovered: { |o|
+		when: o<-get() becomes: { |r|
+			0.to: 3 do: { |i|
+				r.inc(2);
+				yield();
+			};
+			
+			timer.when: seconds(3) elapsed: {
+				system.println("....");
+				system.println("replica2: " + r.value);
+				system.println("pending: " + reflectOnActor().pending);
+				system.println("commit: " + reflectOnActor().commit);
+			};		
+	} };	
+}

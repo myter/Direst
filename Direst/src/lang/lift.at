@@ -1,0 +1,50 @@
+import ~.Signal;
+import ~.ReactiveMirror;
+//import ~.RRepliq;
+object:{
+	
+	def makeLiftedClosure(baseClosure){	
+		{|@args|
+			//Run over the arguments, for now assume that they are all signals. Install dependencies in the actor's DPGraph
+			def imArgs 	:= [];
+			def depends := []; 
+			args.each:{|argument|
+				
+				if: (is: argument taggedAs: Repliq)then:{
+					def sig := argument.getSignal();
+					imArgs 	:= imArgs + [sig.lastVal];
+					depends := depends + [sig];
+				}
+				else:{
+					if: (is: argument taggedAs: SignalType)then:{
+						imArgs 	:= imArgs + [argument.lastVal];
+						depends := depends + [argument];
+					}
+					else:{
+						//Lifted function has been called with non-signal argument
+						//Create a constant signal
+						def signalId		:= (reflectOnActor()).generateSignalId();
+						def constantSignal 	:= makeConstantSignal(signalId,argument);
+						imArgs  			:= imArgs + [argument];
+						depends 			:= depends + [constantSignal];
+						(reflectOnActor()).installDependency([],constantSignal);
+					}
+				}
+			};
+			//First apply of signal to get "default value"
+			def lastSignalValue := baseClosure.apply(imArgs);
+			def signalId		:= (reflectOnActor()).generateSignalId();
+			def newSignal 		:= makeSignal(signalId,lastSignalValue,baseClosure);
+			depends.each:{|sig|
+				newSignal.fireOrder := newSignal.fireOrder + [sig.id]
+			};
+			//Install newSignal in the dependency graph
+			(reflectOnActor()).installDependency(depends,newSignal);
+			newSignal
+		}
+	};
+	
+	def lift(closure){
+		makeLiftedClosure(closure)
+	};
+}

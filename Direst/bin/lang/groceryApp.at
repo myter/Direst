@@ -1,0 +1,134 @@
+deftype Market;
+deftype Runner;
+deftype Client;
+
+def market := actor:{
+	import lobby.lang.RRepliq;
+	import lobby.lang.lift;
+	
+	def selfType(){
+		Market
+	};
+	
+	def priceList := repSig:{
+		def eggPrice 	:= 1;
+		def breadPrice 	:= 2; 
+		def getEggPrice(){
+			eggPrice
+		};
+		def newEggPrice(newPrice){
+			eggPrice :=  newPrice;
+		};
+		def getBreadPrice(){
+			breadPrice
+		};
+		def newBreadPrice(newPrice){
+			breadPrice := newPrice;
+		}
+	};
+	
+	publish: priceList as: Market mutableIf:{|receiver| receiver.selfType() == Market};	
+	
+	def updatePrice(item,newPrice){
+		(item == "egg").ifTrue:{update: priceList by:{|prices| prices.newEggPrice(newPrice)}};
+		(item == "bread").ifTrue:{update: priceList by:{|prices| prices.newBreadPrice(newPrice)}};
+	}
+
+};
+
+def runner := actor:{
+	import lobby.lang.RRepliq;
+	import lobby.lang.lift;
+	import /.at.lang.futures;
+	enableFutures(true);
+	
+	def selfType(){
+		Runner
+	};
+	
+	def groceries := repSig:{
+		def items := [];
+		def toString(){
+			items
+		};
+		def newItem(item){
+			items := items + [item];
+		}
+	};
+	
+	
+	def priceCalculator := lift({|groceries,prices|
+		def totalPrice := 0;
+		groceries.items.each:{|item|
+			(item == "egg").ifTrue:{totalPrice := totalPrice + prices.getEggPrice()};
+			(item == "bread").ifTrue:{totalPrice := totalPrice + prices.getBreadPrice()};
+		};
+		totalPrice
+	});
+	
+	def updateGUI 		:= lift({|groceries,price|
+			system.println("Groceries(master): " + groceries.toString() + " price: " + price )	
+	});
+	whenSignal: Market discovered:{|prices|
+		publish: groceries as: Runner;
+		def currentPrice 	:= priceCalculator(groceries,prices);
+		updateGUI(groceries,currentPrice)
+	};
+	
+	def addGrocery(grocery){			
+		update: groceries by: {|list| list.newItem(grocery)};
+	};
+	
+};
+
+def spawnClient(){
+	actor:{
+		import lobby.lang.RRepliq;
+		import lobby.lang.lift;
+		import /.at.lang.futures;
+		enableFutures(true);
+		
+		def selfType(){
+			Client
+		};
+		
+		def priceCalculator := lift({|groceries,prices|
+			def totalPrice := 0;
+			groceries.items.each:{|item|
+				(item == "egg").ifTrue:{totalPrice := totalPrice + prices.getEggPrice()};
+				(item == "bread").ifTrue:{totalPrice := totalPrice + prices.getBreadPrice()};
+			};
+			totalPrice
+		});
+		
+		def updateGUI := lift({|groceries,price|
+					system.println("Groceries(slave): " + groceries.toString() + " price: " + price )	
+		});
+		
+		def groceryList;
+		whenSignal: Runner discovered:{|groceries|
+			groceryList := groceries;
+			whenSignal: Market discovered:{|prices|
+				def price := priceCalculator(groceries,prices);
+				updateGUI(groceries,price)
+			}
+		};
+		
+		def addGrocery(grocery){
+			update: groceryList by: {|list| list.newItem(grocery)}
+		}
+	}
+};
+def c1 := spawnClient();
+def c2 := spawnClient();
+
+def run(){
+	import /.at.support.timer;
+	runner<-addGrocery("egg");
+	when: 1.seconds() elapsed:{
+		c1<-addGrocery("bread");
+		when: 1.seconds() elapsed:{
+			market<-updatePrice("egg",100)
+		}
+	};
+};

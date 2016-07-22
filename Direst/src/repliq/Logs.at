@@ -1,0 +1,344 @@
+def HashMap := jlobby.java.util.HashMap;
+def Vector := jlobby.java.util.Vector;
+
+
+def LogTrait := object: {
+
+
+// ActorId -> RoundIdMap
+	def rounds := object: {
+		def localMaster   := 0;			    // local master number
+		def remoteReplica := HashMap.new(); // round numbers for remote replica's of this master
+	
+		def localReplica  := HashMap.new(); // round numbers for local replica's of remote masters
+		def remoteMaster  := HashMap.new(); // round numbers for remote masters
+	};
+	
+	def getLocalMasterNr() {
+		rounds.localMaster
+	};
+	
+	def getNextLocalMasterNr() {
+		def nr := getLocalMasterNr();
+		rounds.localMaster := nr + 1;
+		nr + 1
+	};
+	
+	
+	def getRemoteReplica(master) {
+		getZeroNr(rounds.remoteReplica, master);
+	};
+	
+	def getNextRemoteReplica(master) {
+		getNextZeroNr(rounds.remoteReplica, master);
+	};
+	
+	
+	def getLocalReplicaNr(master) {
+		getZeroNr(rounds.localReplica, master)
+	};
+	
+	def getNextLocalReplicaNr(master) {
+		getNextZeroNr(rounds.localReplica, master)
+	};
+	
+	
+	def getRemoteMasterNr(master) {
+		getZeroNr(rounds.remoteMaster, master)
+	};
+	def getNextRemoteMasterNr(master) {
+		getNextZeroNr(rounds.remoteMaster, master)
+	};
+	
+	
+	
+	deftype AlreadyRegisteredRound;
+	def XAlreadyRegisteredRound := lobby.at.lang.exceptions.createException(AlreadyRegisteredRound);
+	
+	def registerMasterRound(id, round) {
+		def remote := rounds.remoteMaster.get(id);
+		def local  := rounds.localReplica.get(id);
+		// TODO: Must check here if the given round is the same as the current round, otherwise error.
+		if: ((remote != nil).or: {local != nil}) then: {
+			//system.println("error");
+			//raise: XAlreadyRegisteredRound.new("cannot register a round for a remote that is already registered");
+		} else: {
+		rounds.remoteMaster.put(id, round);
+		rounds.localReplica.put(id, 0);
+		}
+	};
+	
+	
+	
+	
+	// helpers
+	def getZeroNr(map, master) {
+		def nr := map.get(master);
+		if: (nr == nil) then: {
+			map.put(master, 0);
+			nr := 0;
+		};
+		nr
+	};
+	
+	def getNextZeroNr(map, master) {
+		def nr := getZeroNr(map, master);
+		map.put(master, nr + 1);
+		nr;
+	};
+
+// Logs //
+//////////
+	
+// 
+// ActorId -> Round
+	def current := HashMap.new();
+// ActorId -> Log		( Log = Round[] )
+	def pending := HashMap.new();
+// ActorId -> Log
+	def commit := HashMap.new();
+	
+	def makeRound(mNr, rNr, sender, master) {
+		object: {
+			def masterNr := mNr;
+			def replicaNr := rNr;
+			def senderId := sender;
+			def masterId := master;
+			def operations := Vector.new();
+			def add(op) {
+				operations.add(op);
+			}
+		} taggedAs: [ /.at.lang.types.Isolate ] mirroredBy: RoundMirror;
+	};
+	
+	
+	def RoundMirror := extend: defaultMirror with: {
+		def print() {
+			def base := self.base;
+			"(Round#" + base.masterId + ":" + base.masterNr + " | " + base.senderId + ":" + base.replicaNr + ")"
+		}
+	} taggedAs: [/.at.lang.types.Isolate];
+	
+	def makeOperation(object, inv) {
+		isolate: {
+			def objectId := object;
+			def invocation := inv;
+		}
+	};
+	
+	def invokeOperation(operation) {
+		def repliq := self.getRepliq(operation.objectId);
+		if: !(nil == repliq) then: {
+			repliq <+ operation.invocation;
+		}
+		
+	};
+	
+	def logOperation(sender, master, objectId, inv) {
+		def round := getCurrent(sender, master);
+		def operation := makeOperation(objectId, inv);
+		round.add(operation);
+		//system.println("logging: " + objectId + "+." + inv.selector);
+	};
+	
+	def addToPending(round) {
+		def log := getPending(round.masterId);
+		log.add(round);
+	};
+	
+	def addToCommit(round) {
+		def log := getCommit(round.masterId);
+		log.add(round);
+	};
+	
+	def getPending(actorId) {
+		getLog(pending, actorId)
+	};
+	
+	def setPending(actorId, log) {
+		pending.put(actorId, log);
+	};
+	
+	def getCommit(actorId) {
+		getLog(commit, actorId)
+	};
+	
+	def getCurrent(sender, master) {
+		def round := current.get(master);
+		if: (nil == round) then: {
+			def nr := 0;
+			//if: (sender == master) then: {
+			//	nr := getNextLocalMasterNr();
+			//}else: {
+				//nr := getNextLocalReplicaNr(master);
+			//};
+			round := makeRound(0, 0, sender, master);
+			current.put(master, round);
+		};
+		round
+	};
+	
+	def getLog(map, id) {
+		def log := map.get(id);
+		if: (log == nil) then: {
+			log := /.at.collections.vector.Vector.new();
+			map.put(id, log);
+		};
+		log
+	};
+	
+	
+	def yield() {
+		//system.println("# yielding");
+		//system.println("current: " + current);
+		def it := current.entrySet().iterator();
+		while: { it.hasNext() } do: {
+			def round := it.next().getValue();
+			if: (round.masterId == reflectOnActor().actorId) then: {
+				self.yieldMasterRound(round);
+			} else: {
+				self.yieldReplicaRound(round);
+			};
+		};
+		current := HashMap.new();
+		//system.println("-> Done");
+		//system.println("commit: " + commit);
+		//system.println("pending: " + pending);
+	};
+	
+	// Yield //
+	///////////
+	
+	
+	def yieldReplicaRound(round) {
+		round.replicaNr := self.getNextLocalReplicaNr(round.masterId);
+		//system.println(" - replica round : ");
+		self.addToPending(round);
+		self.sendRoundToMaster(round);
+	};
+	
+	def yieldMasterRound(round) {
+		round.masterNr := getNextLocalMasterNr();
+		//system.println(" - master round " + round.masterNr);
+		self.commitRound(round);
+		self.broadcastRound(round);
+	};
+	
+	def confirmMasterRound(round) {
+		def masterNr := self.getRemoteMasterNr(round.masterId);
+		//system.println("" + masterNr + " <-> " + round.masterNr);
+		if: (masterNr + 1 == round.masterNr) then: {
+			//system.println("# Confirming Master Round " + round.masterNr + " | " + round.replicaNr);
+			self.removeFromPending(round);
+			self.commitRound(round);
+			self.getNextRemoteMasterNr(round.masterId);
+			
+		// rounds were dropped:
+		// * ask to sync up with the master
+		// * drop round
+		} else: {
+			def api := (self.getPublisher(round.masterId)).api;
+			api<-requestSync(self.getActorId(), masterNr);
+		}
+	};
+	
+	def removeFromPending(round) {
+		def me := self.getActorId();
+		//system.println("check for remove: " + round.senderId + ": " + round.replicaNr + " == " + me);
+		if: (round.senderId == me) then: {
+			def log := self.getPending(round.masterId);
+			//system.println(log);
+			setPending(round.masterId, log.filter: { |round|
+				//system.println("check: " + log.get(i).senderId + " == " + me);
+				!((round.senderId == me).and:{round.replicaNr <= round.replicaNr})
+			})
+		}
+	};
+	
+	
+	// Committing a round (both as master or replica!)
+	//////////////////////
+	// 1) set all tentative values of this master to the committed values
+	// 2) play this round
+	// 3) commit all tentative values of this master
+	// 4) play the pending rounds for this master
+	// 5) add round to commit
+	def commitRound(round) {
+		
+		// 1) prepare for replay:
+		//   a) set all tentative values of this master to the committed values
+		//   b) set the object in replay modus.
+		def publisher := self.getPublisher(round.masterId);
+		0.to: publisher.repliqs.size() do: { |i|
+			def om := (reflect: publisher.repliqs.get(i));
+			om.prepareReplay();
+		};
+		//publisher.repliqs.each:{|repliq| (reflect: repliq).resetToCommit()};
+		
+		// 2) play this round
+		0.to: round.operations.size() do: { |i|
+			self.invokeOperation(round.operations.get(i));
+		};
+		
+		// 3) commit all tentative values of this master
+		0.to: publisher.repliqs.size() do: { |i|
+			(reflect: publisher.repliqs.get(i)).commitFields()
+		};
+		
+		// 4) play the pending rounds for this master
+		def rounds := self.getPending(round.masterId);
+		rounds.each: { |round|
+			def ops := round.operations;
+			0.to: ops.size() do: { |j|
+				self.invokeOperation(ops.get(j))
+		}};
+		
+		// 5) cancel replay modus on objects
+		0.to: publisher.repliqs.size() do: { |i|
+			def om := (reflect: publisher.repliqs.get(i));
+			om.endReplay();
+		};
+
+		// 5) add round to commit
+		def log := self.getCommit(round.masterId);
+		log.add(round);
+	};
+	
+	
+	
+	
+	
+	// sync up
+	//////////
+	def requestSync(id, nr) {
+		//system.println("Resyncing");
+		def listener := self.getListener(id);
+		def log := self.getCommit(self.getActorId());
+		//system.println(log.length());
+		log.each: { |round|
+			if: (round.masterNr > nr) then: {
+				listener<-yieldPush(round);
+			}
+		}
+	};
+
+
+
+	// network
+	
+	
+	def broadcastRound(round) {
+		self.broadcast(<-yieldPush(round));
+	};
+	
+	def sendRoundToMaster(round) {
+		//system.println("sending to master " + round.masterId);
+		self.sendToPublisher(round.masterId, <-yieldPull(round));
+		//system.println("sent to master");
+	};
+	
+	
+	
+	
+	
+}

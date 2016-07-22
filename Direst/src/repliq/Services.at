@@ -1,0 +1,139 @@
+def HashMap := jlobby.java.util.HashMap;
+def Vector := jlobby.java.util.Vector;
+
+def createActorId() {
+	"Actor#" +  /.at.support.timer.now().toString() + /.at.support.util.randomNumberBetween(0,10000000)
+};
+
+def RepliqsTrait := object: {
+
+	// create an Id for this actor
+	def actorId := createActorId();	
+	//system.println("New Actor: " + actorId);
+	
+	def getActorId() { self.actorId };
+
+	// Publishers //
+	///////////////
+
+	// create an external publisher api for this actor
+	def publisherApi := object: {
+	
+		def registerListener(id, listener, masterNr) {
+			reflectOnActor().registerListener(id, listener);
+			reflectOnActor().requestSync(id, masterNr);
+		};
+	
+		def yieldPull(round) {
+			//system.println("# processing master round");
+			//system.println(reflectOnActor());
+			// system.println((reflect: reflectOnActor()).listMethods());
+			reflectOnActor().yieldMasterRound(round);
+			//system.println("-> Done");
+			//system.println("commit: " + reflectOnActor().commit);
+			//system.println("pending: " + reflectOnActor().pending);	
+		};
+		
+		def requestSync(id, nr) {
+			reflectOnActor().requestSync(id, nr);
+		};
+		
+	};
+	
+	def getPublisherApi() { self.publisherApi };
+
+	// ActorId -> Service
+	def publishers := HashMap.new();
+	
+	def getPublisher(id) {
+		publishers.get(id);
+	};
+	
+	def makeService(id, api) {
+		object: {
+			def id := id;
+			def api := api;
+			def repliqs := Vector.new();
+		};
+	};
+	
+	def registerPublisher(id, api) {
+		//system.println("registering " + id);
+		def serv := publishers.get(id);
+		if: (nil == serv) then: {
+			serv := makeService(id, api);
+			publishers.put(id, serv);
+		};
+		serv
+	};
+	
+	
+	// send a round to the master
+	def sendToPublisher(id, msg) {
+		def publisher := getPublisher(id);
+		publisher.api<+msg;
+		//system.println("" + id + msg);
+	};
+	
+	
+	// Listeners //
+	//////////////
+	def listenerApi := object: {
+		def yieldPush(round) {
+			//system.println("# confirming round from a master");
+			reflectOnActor().confirmMasterRound(round);
+			//system.println("-> Done");
+		};
+	};
+	
+	def getListenerApi() {
+		self.listenerApi
+	};
+	
+	def getListener(id) {
+		listeners.get(id);
+	};
+	
+	def listeners := HashMap.new();
+	
+	def registerListener(id, listenApi) {
+		//system.println("registering " + id);
+		listeners.put(id, listenApi);
+		//system.println(listeners);
+	};
+	
+	// broadcast
+	def broadcast(msg) {
+		//system.println("Broadcasting round to " + services.size());
+		def it := listeners.entrySet().iterator();
+		while: {it.hasNext()} do: {
+			it.next().getValue()<+msg;
+		};
+	};
+	
+	
+	// Repliq Store
+	///////////////
+	// RepliqId -> Repliq
+	def repliqs := HashMap.new();
+	
+	def getRepliq(id) { repliqs.get(id) };
+	
+	// assumes the service of this repliq is already registered
+	def registerRepliq(repliq) {
+		def m := reflect: repliq;
+		
+		//system.println("registering " + repliq + " for " + m.getMasterId());
+		// save in the master -> repliq mapping
+		def serv := getPublisher(m.getMasterId());
+		serv.repliqs.add(repliq);
+		
+		// save in the id -> repliq mapping
+		repliqs.put(m.getId(), repliq);
+	};
+	
+	
+	
+	
+	registerPublisher(actorId, getPublisherApi());
+}

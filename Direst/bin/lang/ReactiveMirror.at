@@ -1,0 +1,187 @@
+import ~.Signal;
+
+extend: lobby.repliq.RepliqMirror with: {
+	deftype IllegalOperation <: lobby.at.lang.types.Exception;
+	def XIllegalOperation := lobby.at.lang.exceptions.createException(IllegalOperation);
+	
+	def makeRemSignalMirror(signalId,isSource){
+		extend: defaultMirror with: {
+			def isTaggedAs(type){
+				if: (isSource.and:{type == SourceSignalType}) then:{
+					true
+				}
+				else:{
+					super^isTaggedAs(type)
+				}
+			};
+			
+			def pass(){
+				if: isSource then:{
+					if:(self.base.ownerId == reflectOnActor().actorId)then:{
+						// old TODO self.base
+					}
+					else:{
+						raise: XIllegalOperation.new("Cannot pass foreign signal");
+					}
+				}
+				else:{
+					if:(reflectOnActor().dependencies.isLocal(self.base.id))then:{
+						// old TODO self.base
+					}
+					else:{
+						raise: XIllegalOperation.new("Cannot pass signal dependent on foreign source");
+					}
+				}
+			};
+			
+			def resolve(){
+				if: isSource then:{
+					reflectOnActor().newRemoteSource(self.base);
+					self.base.owner<-registerSub(reflectOnActor().signalSubscriber,signalId);
+					self.base
+				}
+				else:{
+					//Upon receiving a foreign signal it is turned into a source for the receiver
+					def source := /.reactive.Signal.makeSource(self.base.id,self.base.lastVal);
+					reflectOnActor().newRemoteSource(source);
+					self.base.owner<-registerSub(reflectOnActor().signalSubscriber,signalId);
+					source
+				};
+			}
+		}taggedAs: [ /.at.lang.types.Isolate ];
+	};
+	
+	def makeSignalMirror(signalId,isSource){
+		extend: defaultMirror with:{			
+			def isTaggedAs(type){
+				if: (isSource.and:{type == SourceSignalType}) then:{
+					true
+				}
+				else:{
+					super^isTaggedAs(type)
+				}
+			};
+			
+			def pass(){
+				if: isSource then:{
+					if:(self.base.ownerId == reflectOnActor().actorId)then:{
+						self.base
+					}
+					else:{
+						raise: XIllegalOperation.new("Cannot pass foreign signal");
+					}
+				}
+				else:{
+					if:(reflectOnActor().dependencies.isLocal(self.base.id))then:{
+						self.base
+					}
+					else:{
+						raise: XIllegalOperation.new("Cannot pass signal dependent on foreign source");
+					}
+				}
+			};
+			
+			def resolve(){
+				if: isSource then:{
+					reflectOnActor().newForeignSource(self.base);
+					self.base.owner<-registerSub(reflectOnActor().signalSubscriber,signalId);
+					self.base
+				}
+				else:{
+					//Upon receiving a foreign signal it is turned into a source for the receiver
+					def source := /.reactive.Signal.makeSource(self.base.id,self.base.lastVal);
+					reflectOnActor().newForeignSource(source);
+					self.base.owner<-registerSub(reflectOnActor().signalSubscriber,signalId);
+					source
+				};
+			}
+		}taggedAs: [ /.at.lang.types.Isolate ];
+	};
+	
+	def makeMasterMirror(objectId,signalId){
+		extend: (super.makeMasterMirror(objectId)) with:{
+			def mirror 		:= self;
+			
+			def onTentative(fieldName,value){
+				//TODO
+			};
+			
+			def onCommit(fieldName,value){
+				reflectOnActor().sourceChanged(signalId,value);
+			};
+			
+			def copyField(name,value){
+				self.addField(makeField(name,value));
+			};
+			
+			def defineField(name, value) {
+				def makeField(nam, com) {
+					object: {
+						def new(newHost) { self }; // singleton pattern
+						def changed := false;
+						def comm := com;
+						def tent := com;
+						
+						def name(){
+							nam
+						};
+						     
+						def readField() {
+							reflectOnActor().dependencies.getNode(signalId).signal;
+					   	};
+					     	 
+						def writeField(newVal) {
+							raise: XIllegalOperation.new("Cannot mutate signal field of Repliq")
+						};
+						
+						def updateField(newVal){
+							tent := newVal;
+							mirror.onTentative(nam,newVal);
+							changed := true;
+							tent
+						};
+							
+						def resetToCommit() {
+							tent := comm;
+						};
+						def commit() {
+							if: ((tent != comm).or:{changed}) then:{
+								changed := false;
+								mirror.onCommit(nam,tent);
+								comm := tent;
+							}
+						};
+					 } taggedAs: [ /.at.lang.types.Field, /.at.lang.types.Isolate];
+				};
+				self.addField(makeField(name,value));
+				nil;
+			};
+		}
+	};
+	
+	def makeReplicaMirror(objectId, masterId, signalId, masterApi, masterNr) {
+		extend: makeMasterMirror(objectId, signalId) with: {
+			def getMasterId() { masterId };
+			def getMasterApi() { masterApi };
+			def getMasterNr() { masterNr };
+			
+			// Pass a replica to another actor
+			def pass() {
+				raise: XIllegalOperation.new("Cannot replicate slave signal")
+			};
+			
+			// Receive a replica from another actor
+			def resolve() {
+				def fields := self.listFields();
+				fields.each:{|field|
+					if: !(field.name == `super) then:{
+						reflectOnActor().repSource(objectId,field.tent);
+					};
+				};
+				reflectOnActor().resolveReplica(self)
+			};
+			
+		} taggedAs: [ /.at.lang.types.Isolate ];
+	};
+
+}

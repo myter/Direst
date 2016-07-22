@@ -1,0 +1,264 @@
+extend: lobby.repliq.Repliq with: {
+	deftype RRepliq <: lobby.repliq.RepliqMirror.Repliq;
+	
+	reflectOnActor().becomeMirroredBy: (extend: reflectOnActor() with: {
+		import ~.DGraph;
+		import ~.Signal;
+		def HashMap := jlobby.java.util.HashMap;
+		
+		def dependencies := DGraph.new();
+		def signalId	 := super.actorId;
+		def repliqMap 	 := HashMap.new();
+		def subMap 		 := HashMap.new();
+		def deActive 	 := [];
+		
+		def signalPublisher := object:{
+			def registerSub(subscriber,signalId){
+				if:(subMap.containsKey(signalId))then:{
+					def current := subMap.get(signalId);
+					current := current + [subscriber];
+					subMap.put(signalId,current)
+				}
+				else:{
+					subMap.put(signalId,[subscriber])
+				};
+				whenever: subscriber disconnected:{
+					system.println("Got disconnect");
+					deActive := deActive + [signalId];
+				};
+				whenever: subscriber reconnected: {
+					def index := deActive.find:{|el| el == signalId};
+					deActive.atPut(index,-1);
+				};
+			}
+		};
+		
+		def signalSubscriber := object:{
+			def newValue(signalId,value){
+				sourceChanged(signalId,value)
+			}
+		};
+		
+		def generateSignalId(){
+			signalId := signalId + 1;
+			signalId
+		};
+		
+		def newSource(value){
+			def signalId 	:= generateSignalId();
+			def signal 		:= makeSource(signalId,value);
+			dependencies.addSource(signal);
+			signal
+		};
+		
+		def newRepSource(value){
+			def signalId 	:= generateSignalId();
+			//system.println("Created new rep source with id: " + signalId);
+			def signal 		:= makeRepSignal(signalId,value);
+			dependencies.addSource(signal);
+			signal
+		};
+		
+		def repSource(repliqId,repSignal){
+			dependencies.addSource(repSignal);
+			repliqMap.put(repliqId,repSignal.id);
+		};
+		
+		def newForeignSource(source){
+			dependencies.addSource(source);
+		};
+		
+		def newForeignRemSource(source){
+			//TODO
+		};
+		
+		def sourceChanged(signalId,value){
+			//system.println("Source: " + signalId + " changed");
+			def signal := dependencies.getNode(signalId).signal;
+			signal.fire([value]);
+			def allChildren 	:= dependencies.getChildren(signalId);
+			allChildren.each:{|child|
+				def childOrder := child.signal.fireOrder;
+				def parentValues[child.parents().length()];
+				child.parents().each:{|parentNode|
+					def parentId := parentNode.signal.id;
+					def position := childOrder.find:{|el|
+						el == parentId
+					};
+					parentValues[position] := parentNode.signal.lastVal;
+				};
+				def newVal := child.signal.fire(parentValues);
+				if:(reflectOnActor().subMap.containsKey(child.signal.id))then:{
+						def subscribers := reflectOnActor().subMap.get(child.signal.id);
+						subscribers.each:{|sub|
+							sub<-newValue(child.signal.id,newVal)
+						}
+				}
+			};
+		};
+		
+		def installDependency(signalParents,newSignal){
+			dependencies.addDependency(signalParents.map:{|node| node.id()},newSignal);
+		};
+		
+		def passReplica(repliq, objectId, actorId) {
+			def signalId 	:= repliqMap.get(objectId); 
+			def mirror 		:= ~.ReactiveMirror.makeReplicaMirror(objectId, actorId, signalId, self.getPublisherApi(), self.getRemoteMasterNr(actorId));
+			self.copyIsolateWithMirror(repliq, mirror);
+		};
+		
+	});
+
+	def reactFieldName := `val;
+	def repSig: sCode {
+		def initialValue := isolate: sCode;
+		def act := reflectOnActor();
+		def objectId := super.createRepliqId();
+		def rcode := {
+			def val := initialValue;
+			def getSignal(){
+				val
+			}
+		};
+		def sig := act.newRepSource(initialValue);
+		//system.println("Creating repliq with sig id = " + sig.id);
+		act.repliqMap.put(objectId,sig.id);
+		def r := object: rcode taggedAs: [ /.at.lang.types.Isolate, RRepliq ] mirroredBy: /.lang.ReactiveMirror.makeMasterMirror(objectId,sig.id);
+		act.registerRepliq(r);
+		r
+	};
+	
+	def replify(signal){
+		def act := reflectOnActor();
+		def objectId := super.createRepliqId();
+		def rcode := {
+			def val := signal;
+			def getSignal(){
+				val
+			}
+		};
+		//system.println("Creating repliq with sig id = " + sig.id);
+		act.repliqMap.put(objectId,signal.id);
+		def r := object: rcode taggedAs: [ /.at.lang.types.Isolate, RRepliq ] mirroredBy: /.lang.ReactiveMirror.makeMasterMirror(objectId,signal.id);
+		act.registerRepliq(r);
+		r
+	};
+	
+	def repSig:as:(initVal,type){
+		def sig := repSig: initVal;
+		export: (object:{
+			def getSig(){
+				sig
+			}
+		}) as: type;
+		sig
+	};
+	
+	def remSig: sCode {
+		def initialValue := isolate: sCode;
+		reflectOnActor().newRemSource(initialValue)
+	};
+	
+	def sig: sCode {
+		def initialValue := isolate: sCode;
+		reflectOnActor().newSource(initialValue);
+	};
+	
+	def sig:as:(initVal,type){
+		def sig := sig: initVal;
+		export: (object:{
+			def getSig(){
+				sig
+			}
+		}) as: type;
+		sig
+	};
+	
+	def publish:as:(signal,type){
+		if:(!(is: signal taggedAs: reflectOnActor().Repliq)) then:{
+			signal := replify(signal);
+		};
+		//Check if signal is source otherwise make access false
+		def node := reflectOnActor().dependencies.getNode(signal.getSignal().id);
+		if: !(node.parents ==  []) then:{
+			def access := {|receiver| false};
+			def isolClosure := script: access;
+			(signal.getSignal()).access := isolClosure;
+		};
+		export:(object:{
+			def getSig(){
+				signal
+			}
+		}) as: type;
+	};
+	
+	def publish:as:mutableIf:(signal,type,accessClosure){
+		//Check if signal is source otherwise make access false
+		def node := reflectOnActor().dependencies.getNode(signal.getSignal().id);
+		def isolClosure;
+		if: !(node.parents ==  []) then:{
+			def access := {|receiver| false};
+			isolClosure := script: access
+		}
+		else:{
+			isolClosure := script: accessClosure;
+		};
+		(signal.getSignal()).access := isolClosure;
+		export:(object:{
+			def getSig(){
+				signal
+			}
+		}) as: type;
+	};
+	
+
+	
+	def whenSignal:discovered:(type,callback){
+		import /.at.lang.futures;
+		enableFutures(true);
+		whenever: type discovered:{|sigWrap|
+			when: sigWrap<-getSig() becomes:{|sig|
+				callback(sig)
+			}
+		}
+	};
+	
+	def update:by:(sig,clojure){
+		if:(sig.getSignal().access(self))then:{
+			if:(is: sig taggedAs: reflectOnActor().Repliq) then:{
+				updateRepliq(sig,clojure)
+			}
+			else:{
+				raise: /.lang.ReactiveMirror.XIllegalOperation.new("Cannot update non-source signal")
+			}
+		}
+		else:{
+			raise: /.lang.ReactiveMirror.XIllegalOperation.new("Actor cannot mutate signal")
+		}
+	};
+	
+	def updateRepliq(resig,clojure){
+		def signalId 		:= resig.getSignal().id;
+		def repliqId 		:= (reflect: resig).getId();
+		def masterId 		:= (reflect: resig).getMasterId();
+		def invocation 		:= object:{
+			def selector 	:= `dummy;
+			def arguments 	:= [];
+			def isolClojure 	:= script: clojure;
+			def sendTo(receiver,sender){
+				//system.println("Updating signal with id: " + signalId);
+				//This code is going to be executed on replica's (or master), need to lookup signal there
+				def signal 			:= reflectOnActor().dependencies.getNode(signalId).signal;
+				def repliq 			:= reflectOnActor().getRepliq(repliqId);
+				def field 			:= (reflect: repliq).grabField(reactFieldName);
+				//def newVal 			:= isolClojure(signal.lastVal);
+				isolClojure(signal.lastVal);
+				field.updateField(signal.lastVal);
+				signal
+			}
+		}taggedAs:[/.at.lang.types.Isolate,/.at.lang.types.MethodInvocation];
+		reflectOnActor().logOperation(reflectOnActor().actorId, masterId, repliqId, invocation);
+		reflectOnActor().yield();
+	};
+
+}

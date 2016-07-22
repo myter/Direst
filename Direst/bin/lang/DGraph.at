@@ -1,0 +1,109 @@
+object:{
+	
+	//Dependency node containing a signal
+	def DNode := object:{
+		def signal;
+		def children;
+		def parents;
+		
+		def init(signal,children,parents){
+			self.signal 	:= signal;
+			self.children	:= children;
+			self.parents	:= parents;
+		};
+		
+		def addChild(child){
+			children := children + [child];
+		};
+		
+		def addParent(parent){
+			parents := parents + [parent];
+		};
+	
+	};
+	
+	def DGraph := object:{
+		def nodes := [];
+		
+		//Sources can only be RRepliq fields, id given by RRepliq actor
+		def addSource(sourceSignal){
+			nodes := nodes + [DNode.new(sourceSignal,[],[])]
+		};
+		
+		def addDependency(parentIds,signal){
+			def newNode := DNode.new(signal,[],[]);
+			def parents := [];
+			nodes.each:{|node|
+				if: parentIds.contains(node.signal.id()) then:{
+					parents := parents + [node]
+				}
+			};
+			parents.each:{|parent|
+				parent.addChild(newNode);
+				newNode.addParent(parent)
+			};
+			nodes := nodes + [newNode];
+		};
+		
+		//Returns topologically list of transitive children for the given source 
+		def getChildren(sourceId){
+			def accum := [];
+			def iter(currentChildren){
+				def tempAccum := [];
+				currentChildren.each:{|child|
+					if: !(accum.contains(child)) then:{
+						tempAccum := tempAccum + [child]
+					} 
+				};
+				//Only continue if new children were added 
+				if: !(tempAccum.isEmpty()) then:{
+					accum := accum + tempAccum;
+					def next := [];
+					currentChildren.each:{|child|
+						def tempNext := child.children();
+						tempNext.each:{|c|
+							if: !(next.contains(c)) then:{
+								next := next + [c]
+							}
+						}
+					};
+					iter(next)
+				}
+				else:{
+					accum
+				}
+			};
+			def startingNode := nodes.at(nodes.find:{|n| n.signal.id == sourceId});
+			iter(startingNode.children())
+		};
+		
+		def getDirectParents(nodeId){
+			getNode(nodeId).parents()
+		};
+		
+		def getNode(id){
+			def found;
+			nodes.each:{|n|
+				if: n.signal.id() == id then:{
+					found := n
+				}
+			};
+			found;
+		};
+		
+		def isLocal(id){
+			def node 	:= getNode(id);
+			def local 	:= (node.signal.ownerId == reflectOnActor().actorId);
+			def parents := node.parents;
+			parents.each:{|p|
+				local := local.and:{p.signal.ownerId == reflectOnActor().actorId};
+				local := local.and:{isLocal(p.signal.id)}
+			};
+			local
+		};
+		
+		def contains(id){
+			!((nodes.find:{|n| n.signal.id == id}) == nil)
+		}
+	}
+}

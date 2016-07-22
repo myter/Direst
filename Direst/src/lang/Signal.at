@@ -1,0 +1,69 @@
+object:{
+	deftype SignalType;
+	deftype SourceSignalType <: SignalType;
+	
+	def makeSignal(sigId,defaultValue,updateExpression,isSource := false){
+		object:{
+			def id 			:= sigId;
+			def lastVal 	:= defaultValue;
+			def access 		:= script: {|receiver| true};
+			def update 		:= script: updateExpression;
+			def ownerId 	:= reflectOnActor().actorId;
+			def owner 		:= reflectOnActor().signalPublisher;
+			def fireOrder 	:= [];
+			
+			def fire(args){
+				def newVal := update.apply(args);
+				lastVal := newVal;
+				lastVal
+			}
+		}taggedAs: [/.at.lang.types.Isolate,SignalType] mirroredBy: /.lang.ReactiveMirror.makeSignalMirror(sigId,isSource);
+	};
+	
+	def makeRemSignal(sigId,defaultValue){
+		object:{
+			def id 			:= sigId;
+			def lastVal 	:= defaultValue;
+			def update 		:= script: updateExpression;
+			def ownerId 	:= reflectOnActor().actorId;
+			def owner 		:= reflectOnActor().signalPublisher;
+			def fireOrder 	:= [];
+			
+			def fire(args){
+				def newVal := update.apply(args);
+				lastVal := newVal;
+				lastVal
+			}
+		}taggedAs: [/.at.lang.types.Isolate,SignalType] mirroredBy: /.lang.ReactiveMirror.makeSignalMirror(sigId,isSource);
+	};
+	
+	def makeRepSignal(sigId,defaultValue){
+		object:{
+			def id 			:= sigId;
+			def lastVal 	:= defaultValue;
+			def update 		:= script: {|newVal| newVal};
+			def access 		:= script: {|receiver| true};
+			def ownerId 	:= reflectOnActor().actorId;
+			def owner 		:= reflectOnActor().signalPublisher;
+			def fireOrder 	:= [];
+			
+			def fire(args){
+				def newVal := update.apply(args);
+				lastVal := newVal;
+				lastVal
+			}
+		}taggedAs: [/.at.lang.types.Isolate,SignalType]
+	};
+	
+	def makeSource(id,defaultValue){
+		//A source signal's update function is a simple id function
+		makeSignal(id,defaultValue,{|newVal| newVal},true);
+	};
+	
+	def makeConstantSignal(id,constantValue){
+		makeSignal(id,constantValue,{|nothing| constantValue})
+	}	
+	
+}
+
+
